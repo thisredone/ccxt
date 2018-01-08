@@ -555,6 +555,10 @@ module.exports = class bitfinex extends Exchange {
     getCurrencyName (currency) {
         if (currency == 'BTC') {
             return 'bitcoin';
+        } else if (currency == 'IOTA') {
+            return 'iota';
+        } else if (currency == 'EDO') {
+            return 'eidoo'
         } else if (currency == 'LTC') {
             return 'litecoin';
         } else if (currency == 'ETH') {
