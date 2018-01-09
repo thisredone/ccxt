@@ -559,6 +559,8 @@ module.exports = class bitfinex extends Exchange {
             return 'iota';
         } else if (currency == 'EDO') {
             return 'eidoo'
+        } else if (currency == 'ZRX') {
+            return 'zrx'
         } else if (currency == 'LTC') {
             return 'litecoin';
         } else if (currency == 'ETH') {
