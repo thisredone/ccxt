@@ -175,6 +175,8 @@ module.exports = class bitfinex2 extends bitfinex {
                 'XRP/USD': { 'id': 'tXRPUSD', 'symbol': 'XRP/USD', 'base': 'XRP', 'quote': 'USD' },
                 'ZEC/BTC': { 'id': 'tZECBTC', 'symbol': 'ZEC/BTC', 'base': 'ZEC', 'quote': 'BTC' },
                 'ZEC/USD': { 'id': 'tZECUSD', 'symbol': 'ZEC/USD', 'base': 'ZEC', 'quote': 'USD' },
+                'FUN/BTC': { 'id': 'tFUNBTC', 'symbol': 'FUN/BTC', 'base': 'FUN', 'quote': 'BTC' },
+                'ZRX/BTC': { 'id': 'tZRXBTC', 'symbol': 'ZRX/BTC', 'base': 'ZRX', 'quote': 'BTC' },
             },
             'fees': {
                 'trading': {
