@@ -1,14 +1,13 @@
-"use strict";
+'use strict';
 
 //  ---------------------------------------------------------------------------
 
-const Exchange = require ('./base/Exchange')
-const { ExchangeError } = require ('./base/errors')
+const Exchange = require ('./base/Exchange');
+const { ExchangeError, NotSupported } = require ('./base/errors');
 
 //  ---------------------------------------------------------------------------
 
 module.exports = class coinsecure extends Exchange {
-
     describe () {
         return this.deepExtend (super.describe (), {
             'id': 'coinsecure',
@@ -16,7 +15,9 @@ module.exports = class coinsecure extends Exchange {
             'countries': 'IN', // India
             'rateLimit': 1000,
             'version': 'v1',
-            'hasCORS': true,
+            'has': {
+                'CORS': true,
+            },
             'urls': {
                 'logo': 'https://user-images.githubusercontent.com/1294454/27766472-9cbd200a-5ed9-11e7-9551-2267ad7bac08.jpg',
                 'api': 'https://api.coinsecure.in',
@@ -171,6 +172,7 @@ module.exports = class coinsecure extends Exchange {
     }
 
     async fetchBalance (params = {}) {
+        await this.loadMarkets ();
         let response = await this.privateGetUserExchangeBankSummary ();
         let balance = response['message'];
         let coin = {
@@ -191,7 +193,8 @@ module.exports = class coinsecure extends Exchange {
         return this.parseBalance (result);
     }
 
-    async fetchOrderBook (symbol, params = {}) {
+    async fetchOrderBook (symbol, limit = undefined, params = {}) {
+        await this.loadMarkets ();
         let bids = await this.publicGetExchangeBidOrders (params);
         let asks = await this.publicGetExchangeAskOrders (params);
         let orderbook = {
@@ -202,11 +205,12 @@ module.exports = class coinsecure extends Exchange {
     }
 
     async fetchTicker (symbol, params = {}) {
+        await this.loadMarkets ();
         let response = await this.publicGetExchangeTicker (params);
         let ticker = response['message'];
         let timestamp = ticker['timestamp'];
         let baseVolume = parseFloat (ticker['coinvolume']);
-        if (symbol == 'BTC/INR') {
+        if (symbol === 'BTC/INR') {
             let satoshi = 0.00000001;
             baseVolume = baseVolume * satoshi;
         }
@@ -236,7 +240,7 @@ module.exports = class coinsecure extends Exchange {
 
     parseTrade (trade, symbol = undefined) {
         let timestamp = trade['time'];
-        let side = (trade['ordType'] == 'bid') ? 'buy' : 'sell';
+        let side = (trade['ordType'] === 'bid') ? 'buy' : 'sell';
         return {
             'id': undefined,
             'timestamp': timestamp,
@@ -253,29 +257,32 @@ module.exports = class coinsecure extends Exchange {
     }
 
     async fetchTrades (symbol, since = undefined, limit = undefined, params = {}) {
+        await this.loadMarkets ();
+        let market = this.market (symbol);
         let result = await this.publicGetExchangeTrades (params);
         if ('message' in result) {
             let trades = result['message'];
-            return this.parseTrades (trades, symbol);
+            return this.parseTrades (trades, market);
         }
     }
 
     async createOrder (market, type, side, amount, price = undefined, params = {}) {
+        await this.loadMarkets ();
         let method = 'privatePutUserExchange';
         let order = {};
-        if (type == 'market') {
+        if (type === 'market') {
             method += 'Instant' + this.capitalize (side);
-            if (side == 'buy')
+            if (side === 'buy')
                 order['maxFiat'] = amount;
             else
                 order['maxVol'] = amount;
         } else {
-            let direction = (side == 'buy') ? 'Bid' : 'Ask';
+            let direction = (side === 'buy') ? 'Bid' : 'Ask';
             method += direction + 'New';
             order['rate'] = price;
             order['vol'] = amount;
         }
-        let response = await this[method] (self.extend (order, params));
+        let response = await this[method] (this.extend (order, params));
         return {
             'info': response,
             'id': response['message']['orderID'],
@@ -283,15 +290,16 @@ module.exports = class coinsecure extends Exchange {
     }
 
     async cancelOrder (id, symbol = undefined, params = {}) {
-        throw new ExchangeError (this.id + ' cancelOrder () is not fully implemented yet');
-        let method = 'privateDeleteUserExchangeAskCancelOrderId'; // TODO fixme, have to specify order side here
-        return await this[method] ({ 'orderID': id });
+        await this.loadMarkets ();
+        // let method = 'privateDeleteUserExchangeAskCancelOrderId'; // TODO fixme, have to specify order side here
+        // return await this[method] ({ 'orderID': id });
+        throw new NotSupported (this.id + ' cancelOrder () is not fully implemented yet');
     }
 
     sign (path, api = 'public', method = 'GET', params = {}, headers = undefined, body = undefined) {
         let url = this.urls['api'] + '/' + this.version + '/' + this.implodeParams (path, params);
         let query = this.omit (params, this.extractParams (path));
-        if (api == 'private') {
+        if (api === 'private') {
             this.checkRequiredCredentials ();
             headers = { 'Authorization': this.apiKey };
             if (Object.keys (query).length) {
@@ -303,8 +311,8 @@ module.exports = class coinsecure extends Exchange {
     }
 
     handleErrors (code, reason, url, method, headers, body) {
-        if (code == 200) {
-            if ((body[0] == '{') || (body[0] == '[')) {
+        if (code === 200) {
+            if ((body[0] === '{') || (body[0] === '[')) {
                 let response = JSON.parse (body);
                 if ('success' in response) {
                     let success = response['success'];
@@ -323,4 +331,4 @@ module.exports = class coinsecure extends Exchange {
             }
         }
     }
-}
+};
