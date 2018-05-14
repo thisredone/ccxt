@@ -92,23 +92,26 @@ class btcturk (Exchange):
         if market:
             symbol = market['symbol']
         timestamp = int(ticker['timestamp']) * 1000
+        last = self.safe_float(ticker, 'last')
         return {
             'symbol': symbol,
             'timestamp': timestamp,
             'datetime': self.iso8601(timestamp),
-            'high': float(ticker['high']),
-            'low': float(ticker['low']),
-            'bid': float(ticker['bid']),
-            'ask': float(ticker['ask']),
+            'high': self.safe_float(ticker, 'high'),
+            'low': self.safe_float(ticker, 'low'),
+            'bid': self.safe_float(ticker, 'bid'),
+            'bidVolume': None,
+            'ask': self.safe_float(ticker, 'ask'),
+            'askVolume': None,
             'vwap': None,
-            'open': float(ticker['open']),
-            'close': None,
-            'first': None,
-            'last': float(ticker['last']),
+            'open': self.safe_float(ticker, 'open'),
+            'close': last,
+            'last': last,
+            'previousClose': None,
             'change': None,
             'percentage': None,
-            'average': float(ticker['average']),
-            'baseVolume': float(ticker['volume']),
+            'average': self.safe_float(ticker, 'average'),
+            'baseVolume': self.safe_float(ticker, 'volume'),
             'quoteVolume': None,
             'info': ticker,
         }

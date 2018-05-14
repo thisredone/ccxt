@@ -89,18 +89,19 @@ module.exports = class coinmarketcap extends Exchange {
 
     currencyCode (base, name) {
         const currencies = {
+            'ACChain': 'ACChain',
+            'AdCoin': 'AdCoin',
             'BatCoin': 'BatCoin',
             'Bitgem': 'Bitgem',
+            'BlazeCoin': 'BlazeCoin',
             'BlockCAT': 'BlockCAT',
             'Catcoin': 'Catcoin',
             'Hi Mutual Society': 'Hi Mutual Society',
             'iCoin': 'iCoin',
-            'NetCoin': 'NetCoin',
-            // a special case, most exchanges list it as IOTA, therefore
-            // we change just the Coinmarketcap instead of changing them all
-            'MIOTA': 'IOTA',
             'Maggie': 'Maggie',
-            'BlazeCoin': 'BlazeCoin',
+            'MIOTA': 'IOTA', // a special case, most exchanges list it as IOTA, therefore we change just the Coinmarketcap instead of changing them all
+            'NetCoin': 'NetCoin',
+            'Polcoin': 'Polcoin',
         };
         if (name in currencies)
             return currencies[name];
@@ -174,12 +175,14 @@ module.exports = class coinmarketcap extends Exchange {
             'high': undefined,
             'low': undefined,
             'bid': undefined,
+            'bidVolume': undefined,
             'ask': undefined,
+            'askVolume': undefined,
             'vwap': undefined,
             'open': undefined,
-            'close': undefined,
-            'first': undefined,
+            'close': last,
             'last': last,
+            'previousClose': undefined,
             'change': change,
             'percentage': undefined,
             'average': undefined,
@@ -200,7 +203,8 @@ module.exports = class coinmarketcap extends Exchange {
         let tickers = {};
         for (let t = 0; t < response.length; t++) {
             let ticker = response[t];
-            let id = ticker['id'] + '/' + currency;
+            let currencyId = (currency in this.currencies) ? this.currencies[currency]['id'] : currency.toLowerCase ();
+            let id = ticker['id'] + '/' + currencyId;
             let symbol = id;
             let market = undefined;
             if (id in this.markets_by_id) {

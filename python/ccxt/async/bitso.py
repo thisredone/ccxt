@@ -4,7 +4,17 @@
 # https://github.com/ccxt/ccxt/blob/master/CONTRIBUTING.md#how-to-contribute-code
 
 from ccxt.async.base.exchange import Exchange
+
+# -----------------------------------------------------------------------------
+
+try:
+    basestring  # Python 3
+except NameError:
+    basestring = str  # Python 2
+import json
 from ccxt.base.errors import ExchangeError
+from ccxt.base.errors import AuthenticationError
+from ccxt.base.errors import InvalidNonce
 
 
 class bitso (Exchange):
@@ -18,6 +28,8 @@ class bitso (Exchange):
             'version': 'v3',
             'has': {
                 'CORS': True,
+                'fetchMyTrades': True,
+                'fetchOpenOrders': True,
             },
             'urls': {
                 'logo': 'https://user-images.githubusercontent.com/1294454/27766335-715ce7aa-5ed5-11e7-88a8-173a27bb30fe.jpg',
@@ -74,6 +86,10 @@ class bitso (Exchange):
                     ],
                 },
             },
+            'exceptions': {
+                '0201': AuthenticationError,  # Invalid Nonce or Invalid Credentials
+                '104': InvalidNonce,  # Cannot perform request - nonce must be higher than 1520307203724237
+            },
         })
 
     async def fetch_markets(self):
@@ -86,16 +102,16 @@ class bitso (Exchange):
             base, quote = symbol.split('/')
             limits = {
                 'amount': {
-                    'min': float(market['minimum_amount']),
-                    'max': float(market['maximum_amount']),
+                    'min': self.safe_float(market, 'minimum_amount'),
+                    'max': self.safe_float(market, 'maximum_amount'),
                 },
                 'price': {
-                    'min': float(market['minimum_price']),
-                    'max': float(market['maximum_price']),
+                    'min': self.safe_float(market, 'minimum_price'),
+                    'max': self.safe_float(market, 'maximum_price'),
                 },
                 'cost': {
-                    'min': float(market['minimum_value']),
-                    'max': float(market['maximum_value']),
+                    'min': self.safe_float(market, 'minimum_value'),
+                    'max': self.safe_float(market, 'maximum_value'),
                 },
             }
             precision = {
@@ -147,22 +163,25 @@ class bitso (Exchange):
         }, params))
         ticker = response['payload']
         timestamp = self.parse8601(ticker['created_at'])
-        vwap = float(ticker['vwap'])
-        baseVolume = float(ticker['volume'])
+        vwap = self.safe_float(ticker, 'vwap')
+        baseVolume = self.safe_float(ticker, 'volume')
         quoteVolume = baseVolume * vwap
+        last = self.safe_float(ticker, 'last')
         return {
             'symbol': symbol,
             'timestamp': timestamp,
             'datetime': self.iso8601(timestamp),
-            'high': float(ticker['high']),
-            'low': float(ticker['low']),
-            'bid': float(ticker['bid']),
-            'ask': float(ticker['ask']),
+            'high': self.safe_float(ticker, 'high'),
+            'low': self.safe_float(ticker, 'low'),
+            'bid': self.safe_float(ticker, 'bid'),
+            'bidVolume': None,
+            'ask': self.safe_float(ticker, 'ask'),
+            'askVolume': None,
             'vwap': vwap,
             'open': None,
-            'close': None,
-            'first': None,
-            'last': float(ticker['last']),
+            'close': last,
+            'last': last,
+            'previousClose': None,
             'change': None,
             'percentage': None,
             'average': None,
@@ -292,14 +311,15 @@ class bitso (Exchange):
             symbol = market['symbol']
         orderType = order['type']
         timestamp = self.parse8601(order['created_at'])
-        amount = float(order['original_amount'])
-        remaining = float(order['unfilled_amount'])
+        amount = self.safe_float(order, 'original_amount')
+        remaining = self.safe_float(order, 'unfilled_amount')
         filled = amount - remaining
         result = {
             'info': order,
             'id': order['oid'],
             'timestamp': timestamp,
             'datetime': self.iso8601(timestamp),
+            'lastTradeTimestamp': None,
             'symbol': symbol,
             'type': orderType,
             'side': side,
@@ -361,6 +381,35 @@ class bitso (Exchange):
                 'Content-Type': 'application/json',
             }
         return {'url': url, 'method': method, 'body': body, 'headers': headers}
+
+    def handle_errors(self, httpCode, reason, url, method, headers, body):
+        if not isinstance(body, basestring):
+            return  # fallback to default error handler
+        if len(body) < 2:
+            return  # fallback to default error handler
+        if (body[0] == '{') or (body[0] == '['):
+            response = json.loads(body)
+            if 'success' in response:
+                #
+                #     {"success":false,"error":{"code":104,"message":"Cannot perform request - nonce must be higher than 1520307203724237"}}
+                #
+                success = self.safe_value(response, 'success', False)
+                if isinstance(success, basestring):
+                    if (success == 'true') or (success == '1'):
+                        success = True
+                    else:
+                        success = False
+                if not success:
+                    feedback = self.id + ' ' + self.json(response)
+                    error = self.safe_value(response, 'error')
+                    if error is None:
+                        raise ExchangeError(feedback)
+                    code = self.safe_string(error, 'code')
+                    exceptions = self.exceptions
+                    if code in exceptions:
+                        raise exceptions[code](feedback)
+                    else:
+                        raise ExchangeError(feedback)
 
     async def request(self, path, api='public', method='GET', params={}, headers=None, body=None):
         response = await self.fetch2(path, api, method, params, headers, body)

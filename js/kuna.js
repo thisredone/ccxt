@@ -20,6 +20,7 @@ module.exports = class kuna extends acx {
                 'fetchTickers': true,
                 'fetchOpenOrders': true,
                 'fetchMyTrades': true,
+                'withdraw': false,
             },
             'urls': {
                 'logo': 'https://user-images.githubusercontent.com/1294454/31697638-912824fa-b3c1-11e7-8c36-cf9606eb94ac.jpg',
@@ -27,30 +28,6 @@ module.exports = class kuna extends acx {
                 'www': 'https://kuna.io',
                 'doc': 'https://kuna.io/documents/api',
                 'fees': 'https://kuna.io/documents/api',
-            },
-            'api': {
-                'public': {
-                    'get': [
-                        'tickers', // all of them at once
-                        'tickers/{market}',
-                        'order_book',
-                        'order_book/{market}',
-                        'trades',
-                        'trades/{market}',
-                        'timestamp',
-                    ],
-                },
-                'private': {
-                    'get': [
-                        'members/me',
-                        'orders',
-                        'trades/my',
-                    ],
-                    'post': [
-                        'orders',
-                        'order/delete',
-                    ],
-                },
             },
             'fees': {
                 'trading': {
@@ -133,6 +110,7 @@ module.exports = class kuna extends acx {
     }
 
     async fetchOrderBook (symbol, limit = undefined, params = {}) {
+        await this.loadMarkets ();
         let market = this.market (symbol);
         let orderBook = await this.publicGetOrderBook (this.extend ({
             'market': market['id'],
@@ -147,6 +125,7 @@ module.exports = class kuna extends acx {
     async fetchOpenOrders (symbol = undefined, since = undefined, limit = undefined, params = {}) {
         if (!symbol)
             throw new ExchangeError (this.id + ' fetchOpenOrders requires a symbol argument');
+        await this.loadMarkets ();
         let market = this.market (symbol);
         let orders = await this.privateGetOrders (this.extend ({
             'market': market['id'],
@@ -162,20 +141,26 @@ module.exports = class kuna extends acx {
         let symbol = undefined;
         if (market)
             symbol = market['symbol'];
+        let side = this.safeString (trade, 'side');
+        let cost = this.safeFloat (trade, 'funds');
+        let order = this.safeString (trade, 'order_id');
         return {
             'id': trade['id'].toString (),
             'timestamp': timestamp,
             'datetime': this.iso8601 (timestamp),
             'symbol': symbol,
             'type': undefined,
-            'side': undefined,
-            'price': parseFloat (trade['price']),
-            'amount': parseFloat (trade['volume']),
+            'side': side === 'ask' ? 'sell' : 'buy',
+            'price': this.safeFloat (trade, 'price'),
+            'amount': this.safeFloat (trade, 'volume'),
+            'cost': cost,
+            'order': order,
             'info': trade,
         };
     }
 
     async fetchTrades (symbol, since = undefined, limit = undefined, params = {}) {
+        await this.loadMarkets ();
         let market = this.market (symbol);
         let response = await this.publicGetTrades (this.extend ({
             'market': market['id'],
@@ -183,39 +168,12 @@ module.exports = class kuna extends acx {
         return this.parseTrades (response, market, since, limit);
     }
 
-    parseMyTrade (trade, market) {
-        let timestamp = this.parse8601 (trade['created_at']);
-        let symbol = undefined;
-        if (market)
-            symbol = market['symbol'];
-        return {
-            'id': trade['id'],
-            'timestamp': timestamp,
-            'datetime': this.iso8601 (timestamp),
-            'price': trade['price'],
-            'amount': trade['volume'],
-            'cost': trade['funds'],
-            'symbol': symbol,
-            'side': trade['side'],
-            'order': trade['order_id'],
-        };
-    }
-
-    parseMyTrades (trades, market = undefined) {
-        let parsedTrades = [];
-        for (let i = 0; i < trades.length; i++) {
-            let trade = trades[i];
-            let parsedTrade = this.parseMyTrade (trade, market);
-            parsedTrades.push (parsedTrade);
-        }
-        return parsedTrades;
-    }
-
     async fetchMyTrades (symbol = undefined, since = undefined, limit = undefined, params = {}) {
         if (!symbol)
             throw new ExchangeError (this.id + ' fetchOpenOrders requires a symbol argument');
+        await this.loadMarkets ();
         let market = this.market (symbol);
         let response = await this.privateGetTradesMy ({ 'market': market['id'] });
-        return this.parseMyTrades (response, market);
+        return this.parseTrades (response, market, since, limit);
     }
 };

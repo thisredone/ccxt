@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 const hitbtc = require ('./hitbtc');
-const { ExchangeError, OrderNotFound, InsufficientFunds, InvalidOrder } = require ('./base/errors');
+const { ExchangeError, ExchangeNotAvailable, OrderNotFound, InsufficientFunds, InvalidOrder } = require ('./base/errors');
 
 // ---------------------------------------------------------------------------
 
@@ -12,7 +12,7 @@ module.exports = class hitbtc2 extends hitbtc {
         return this.deepExtend (super.describe (), {
             'id': 'hitbtc2',
             'name': 'HitBTC v2',
-            'countries': 'UK',
+            'countries': 'HK',
             'rateLimit': 1500,
             'version': '2',
             'has': {
@@ -45,7 +45,7 @@ module.exports = class hitbtc2 extends hitbtc {
             'urls': {
                 'logo': 'https://user-images.githubusercontent.com/1294454/27766555-8eaec20e-5edc-11e7-9c5b-6dc69fc42f5e.jpg',
                 'api': 'https://api.hitbtc.com',
-                'www': 'https://hitbtc.com',
+                'www': 'https://hitbtc.com/?ref_id=5a5d39a65d466',
                 'doc': 'https://api.hitbtc.com',
                 'fees': [
                     'https://hitbtc.com/fees-and-limits',
@@ -532,19 +532,6 @@ module.exports = class hitbtc2 extends hitbtc {
         });
     }
 
-    commonCurrencyCode (currency) {
-        let currencies = {
-            'XBT': 'BTC',
-            'DRK': 'DASH',
-            'CAT': 'BitClave',
-            'USD': 'USDT',
-            'EMGO': 'MGO',
-        };
-        if (currency in currencies)
-            return currencies[currency];
-        return currency;
-    }
-
     feeToPrecision (symbol, fee) {
         return this.truncate (fee, 8);
     }
@@ -560,14 +547,14 @@ module.exports = class hitbtc2 extends hitbtc {
             let base = this.commonCurrencyCode (baseId);
             let quote = this.commonCurrencyCode (quoteId);
             let symbol = base + '/' + quote;
-            let lot = parseFloat (market['quantityIncrement']);
-            let step = parseFloat (market['tickSize']);
+            let lot = this.safeFloat (market, 'quantityIncrement');
+            let step = this.safeFloat (market, 'tickSize');
             let precision = {
                 'price': this.precisionFromString (market['tickSize']),
                 'amount': this.precisionFromString (market['quantityIncrement']),
             };
-            let taker = parseFloat (market['takeLiquidityRate']);
-            let maker = parseFloat (market['provideLiquidityRate']);
+            let taker = this.safeFloat (market, 'takeLiquidityRate');
+            let maker = this.safeFloat (market, 'provideLiquidityRate');
             result.push (this.extend (this.fees['trading'], {
                 'info': market,
                 'id': id,
@@ -634,7 +621,7 @@ module.exports = class hitbtc2 extends hitbtc {
                 'name': currency['fullName'],
                 'active': active,
                 'status': status,
-                'fee': undefined, // todo: redesign
+                'fee': this.safeFloat (currency, 'payoutFee'), // todo: redesign
                 'precision': precision,
                 'limits': {
                     'amount': {
@@ -746,7 +733,9 @@ module.exports = class hitbtc2 extends hitbtc {
             'high': this.safeFloat (ticker, 'high'),
             'low': this.safeFloat (ticker, 'low'),
             'bid': this.safeFloat (ticker, 'bid'),
+            'bidVolume': undefined,
             'ask': this.safeFloat (ticker, 'ask'),
+            'askVolume': undefined,
             'vwap': vwap,
             'open': open,
             'close': last,
@@ -804,15 +793,15 @@ module.exports = class hitbtc2 extends hitbtc {
         if ('fee' in trade) {
             let currency = market ? market['quote'] : undefined;
             fee = {
-                'cost': parseFloat (trade['fee']),
+                'cost': this.safeFloat (trade, 'fee'),
                 'currency': currency,
             };
         }
         let orderId = undefined;
         if ('clientOrderId' in trade)
             orderId = trade['clientOrderId'];
-        let price = parseFloat (trade['price']);
-        let amount = parseFloat (trade['quantity']);
+        let price = this.safeFloat (trade, 'price');
+        let amount = this.safeFloat (trade, 'quantity');
         let cost = price * amount;
         return {
             'info': trade,
@@ -937,8 +926,7 @@ module.exports = class hitbtc2 extends hitbtc {
             'id': id,
             'timestamp': created,
             'datetime': this.iso8601 (created),
-            'created': created,
-            'updated': updated,
+            'lastTradeTimestamp': updated,
             'status': status,
             'symbol': symbol,
             'type': order['type'],
@@ -1071,7 +1059,7 @@ module.exports = class hitbtc2 extends hitbtc {
         this.checkAddress (address);
         let tag = this.safeString (response, 'paymentId');
         return {
-            'currency': currency,
+            'currency': currency.code,
             'address': address,
             'tag': tag,
             'status': 'ok',
@@ -1080,6 +1068,7 @@ module.exports = class hitbtc2 extends hitbtc {
     }
 
     async withdraw (code, amount, address, tag = undefined, params = {}) {
+        this.checkAddress (address);
         let currency = this.currency (code);
         let request = {
             'currency': currency['id'],
@@ -1124,7 +1113,13 @@ module.exports = class hitbtc2 extends hitbtc {
     }
 
     handleErrors (code, reason, url, method, headers, body) {
-        if (code === 400) {
+        if (typeof body !== 'string')
+            return;
+        if (code >= 400) {
+            const feedback = this.id + ' ' + body;
+            // {"code":504,"message":"Gateway Timeout","description":""}
+            if ((code === 503) || (code === 504))
+                throw new ExchangeNotAvailable (feedback);
             if (body[0] === '{') {
                 let response = JSON.parse (body);
                 if ('error' in response) {
@@ -1133,23 +1128,16 @@ module.exports = class hitbtc2 extends hitbtc {
                         if (message === 'Order not found') {
                             throw new OrderNotFound (this.id + ' order not found in active orders');
                         } else if (message === 'Quantity not a valid number') {
-                            throw new InvalidOrder (this.id + ' ' + body);
+                            throw new InvalidOrder (feedback);
                         } else if (message === 'Insufficient funds') {
-                            throw new InsufficientFunds (this.id + ' ' + body);
+                            throw new InsufficientFunds (feedback);
                         } else if (message === 'Duplicate clientOrderId') {
-                            throw new InvalidOrder (this.id + ' ' + body);
+                            throw new InvalidOrder (feedback);
                         }
                     }
                 }
             }
-            throw new ExchangeError (this.id + ' ' + body);
+            throw new ExchangeError (feedback);
         }
-    }
-
-    async request (path, api = 'public', method = 'GET', params = {}, headers = undefined, body = undefined) {
-        let response = await this.fetch2 (path, api, method, params, headers, body);
-        if ('error' in response)
-            throw new ExchangeError (this.id + ' ' + this.json (response));
-        return response;
     }
 };

@@ -14,6 +14,7 @@ except NameError:
 import base64
 import hashlib
 import math
+import json
 from ccxt.base.errors import ExchangeError
 from ccxt.base.errors import InsufficientFunds
 from ccxt.base.errors import InvalidAddress
@@ -37,6 +38,7 @@ class kraken (Exchange):
             'has': {
                 'createDepositAddress': True,
                 'fetchDepositAddress': True,
+                'fetchTradingFees': True,
                 'CORS': False,
                 'fetchCurrencies': True,
                 'fetchTickers': True,
@@ -64,7 +66,7 @@ class kraken (Exchange):
                 'api': {
                     'public': 'https://api.kraken.com',
                     'private': 'https://api.kraken.com',
-                    'zendesk': 'https://kraken.zendesk.com/hc/en-us/articles',
+                    'zendesk': 'https://support.kraken.com/hc/en-us/articles',
                 },
                 'www': 'https://www.kraken.com',
                 'doc': [
@@ -202,6 +204,19 @@ class kraken (Exchange):
                     ],
                 },
             },
+            'options': {
+                'cacheDepositMethodsOnFetchDepositAddress': True,  # will issue up to two calls in fetchDepositAddress
+                'depositMethods': {},
+            },
+            'exceptions': {
+                'EFunding:Unknown withdraw key': ExchangeError,
+                'EFunding:Invalid amount': InsufficientFunds,
+                'EService:Unavailable': ExchangeNotAvailable,
+                'EDatabase:Internal error': ExchangeNotAvailable,
+                'EService:Busy': ExchangeNotAvailable,
+                'EAPI:Rate limit exceeded': DDoSProtection,
+                'EQuery:Unknown asset': ExchangeError,
+            },
         })
 
     def cost_to_precision(self, symbol, cost):
@@ -209,18 +224,6 @@ class kraken (Exchange):
 
     def fee_to_precision(self, symbol, fee):
         return self.truncate(float(fee), self.markets[symbol]['precision']['amount'])
-
-    def handle_errors(self, code, reason, url, method, headers, body):
-        if body.find('Invalid order') >= 0:
-            raise InvalidOrder(self.id + ' ' + body)
-        if body.find('Invalid nonce') >= 0:
-            raise InvalidNonce(self.id + ' ' + body)
-        if body.find('Insufficient funds') >= 0:
-            raise InsufficientFunds(self.id + ' ' + body)
-        if body.find('Cancel pending') >= 0:
-            raise CancelPending(self.id + ' ' + body)
-        if body.find('Invalid arguments:volume') >= 0:
-            raise InvalidOrder(self.id + ' ' + body)
 
     async def fetch_min_order_sizes(self):
         html = None
@@ -274,8 +277,7 @@ class kraken (Exchange):
                 'amount': market['lot_decimals'],
                 'price': market['pair_decimals'],
             }
-            lot = math.pow(10, -precision['amount'])
-            minAmount = lot
+            minAmount = math.pow(10, -precision['amount'])
             if base in limits:
                 minAmount = limits[base]
             result.append({
@@ -288,7 +290,6 @@ class kraken (Exchange):
                 'altname': market['altname'],
                 'maker': maker,
                 'taker': float(market['fees'][0][1]) / 100,
-                'lot': lot,
                 'active': True,
                 'precision': precision,
                 'limits': {
@@ -321,7 +322,6 @@ class kraken (Exchange):
             'info': None,
             'maker': None,
             'taker': None,
-            'lot': amountLimits['min'],
             'active': False,
             'precision': precision,
             'limits': limits,
@@ -418,6 +418,7 @@ class kraken (Exchange):
         baseVolume = float(ticker['v'][1])
         vwap = float(ticker['p'][1])
         quoteVolume = baseVolume * vwap
+        last = float(ticker['c'][0])
         return {
             'symbol': symbol,
             'timestamp': timestamp,
@@ -425,12 +426,14 @@ class kraken (Exchange):
             'high': float(ticker['h'][1]),
             'low': float(ticker['l'][1]),
             'bid': float(ticker['b'][0]),
+            'bidVolume': None,
             'ask': float(ticker['a'][0]),
+            'askVolume': None,
             'vwap': vwap,
-            'open': float(ticker['o']),
-            'close': None,
-            'first': None,
-            'last': float(ticker['c'][0]),
+            'open': self.safe_float(ticker, 'o'),
+            'close': last,
+            'last': last,
+            'previousClose': None,
             'change': None,
             'percentage': None,
             'average': None,
@@ -515,14 +518,14 @@ class kraken (Exchange):
             timestamp = int(trade['time'] * 1000)
             side = trade['type']
             type = trade['ordertype']
-            price = float(trade['price'])
-            amount = float(trade['vol'])
+            price = self.safe_float(trade, 'price')
+            amount = self.safe_float(trade, 'vol')
             if 'fee' in trade:
                 currency = None
                 if market:
                     currency = market['quote']
                 fee = {
-                    'cost': float(trade['fee']),
+                    'cost': self.safe_float(trade, 'fee'),
                     'currency': currency,
                 }
         else:
@@ -546,6 +549,7 @@ class kraken (Exchange):
             'side': side,
             'price': price,
             'amount': amount,
+            'cost': price * amount,
             'fee': fee,
         }
 
@@ -556,7 +560,7 @@ class kraken (Exchange):
         response = await self.publicGetTrades(self.extend({
             'pair': id,
         }, params))
-        # {result: {marketid: [...trades]}, last: "last_trade_id"}
+        # {result: {marketid: [... trades]}, last: "last_trade_id"}
         result = response['result']
         trades = result[id]
         # trades is a sorted array: last(most recent trade) goes last
@@ -571,7 +575,9 @@ class kraken (Exchange):
     async def fetch_balance(self, params={}):
         await self.load_markets()
         response = await self.privatePostBalance()
-        balances = response['result']
+        balances = self.safe_value(response, 'result')
+        if balances is None:
+            raise ExchangeNotAvailable(self.id + ' fetchBalance failed due to a malformed response ' + self.json(response))
         result = {'info': balances}
         currencies = list(balances.keys())
         for c in range(0, len(currencies)):
@@ -626,18 +632,18 @@ class kraken (Exchange):
         side = description['type']
         type = description['ordertype']
         symbol = None
-        if not market:
+        if market is None:
             market = self.find_market_by_altname_or_id(description['pair'])
         timestamp = int(order['opentm'] * 1000)
-        amount = float(order['vol'])
-        filled = float(order['vol_exec'])
+        amount = self.safe_float(order, 'vol')
+        filled = self.safe_float(order, 'vol_exec')
         remaining = amount - filled
         fee = None
         cost = self.safe_float(order, 'cost')
         price = self.safe_float(description, 'price')
         if not price:
             price = self.safe_float(order, 'price')
-        if market:
+        if market is not None:
             symbol = market['symbol']
             if 'fee' in order:
                 flags = order['oflags']
@@ -655,6 +661,7 @@ class kraken (Exchange):
             'info': order,
             'timestamp': timestamp,
             'datetime': self.iso8601(timestamp),
+            'lastTradeTimestamp': None,
             'status': order['status'],
             'symbol': symbol,
             'type': type,
@@ -704,7 +711,10 @@ class kraken (Exchange):
         ids = list(trades.keys())
         for i in range(0, len(ids)):
             trades[ids[i]]['id'] = ids[i]
-        return self.parse_trades(trades, None, since, limit)
+        result = self.parse_trades(trades, None, since, limit)
+        if symbol is None:
+            return result
+        return self.filter_by_symbol(result, symbol)
 
     async def cancel_order(self, id, symbol=None, params={}):
         await self.load_markets()
@@ -727,6 +737,8 @@ class kraken (Exchange):
             request['start'] = int(since / 1000)
         response = await self.privatePostOpenOrders(self.extend(request, params))
         orders = self.parse_orders(response['result']['open'], None, since, limit)
+        if symbol is None:
+            return orders
         return self.filter_by_symbol(orders, symbol)
 
     async def fetch_closed_orders(self, symbol=None, since=None, limit=None, params={}):
@@ -736,42 +748,50 @@ class kraken (Exchange):
             request['start'] = int(since / 1000)
         response = await self.privatePostClosedOrders(self.extend(request, params))
         orders = self.parse_orders(response['result']['closed'], None, since, limit)
+        if symbol is None:
+            return orders
         return self.filter_by_symbol(orders, symbol)
 
-    async def fetch_deposit_methods(self, code=None, params={}):
+    async def fetch_deposit_methods(self, code, params={}):
         await self.load_markets()
-        request = {}
-        if code:
-            currency = self.currency(code)
-            request['asset'] = currency['id']
-        response = await self.privatePostDepositMethods(self.extend(request, params))
+        currency = self.currency(code)
+        response = await self.privatePostDepositMethods(self.extend({
+            'asset': currency['id'],
+        }, params))
         return response['result']
 
-    async def create_deposit_address(self, currency, params={}):
+    async def create_deposit_address(self, code, params={}):
         request = {
             'new': 'true',
         }
-        response = await self.fetch_deposit_address(currency, self.extend(request, params))
+        response = await self.fetch_deposit_address(code, self.extend(request, params))
         address = self.safe_string(response, 'address')
         self.check_address(address)
         return {
-            'currency': currency,
+            'currency': code,
             'address': address,
             'status': 'ok',
             'info': response,
         }
 
     async def fetch_deposit_address(self, code, params={}):
-        method = self.safe_value(params, 'method')
-        if not method:
-            raise ExchangeError(self.id + ' fetchDepositAddress() requires an extra `method` parameter')
         await self.load_markets()
         currency = self.currency(code)
+        # eslint-disable-next-line quotes
+        method = self.safe_string(params, 'method')
+        if method is None:
+            if self.options['cacheDepositMethodsOnFetchDepositAddress']:
+                # cache depositMethods
+                if not(code in list(self.options['depositMethods'].keys())):
+                    self.options['depositMethods'][code] = await self.fetch_deposit_methods(code)
+                method = self.options['depositMethods'][code][0]['method']
+            else:
+                raise ExchangeError(self.id + ' fetchDepositAddress() requires an extra `method` parameter. Use fetchDepositMethods("' + code + '") to get a list of available deposit methods or enable the exchange property .options["cacheDepositMethodsOnFetchDepositAddress"] = True')
         request = {
             'asset': currency['id'],
             'method': method,
         }
-        response = await self.privatePostDepositAddresses(self.extend(request, params))
+        response = await self.privatePostDepositAddresses(self.extend(request, params))  # overwrite methods
         result = response['result']
         numResults = len(result)
         if numResults < 1:
@@ -828,18 +848,25 @@ class kraken (Exchange):
     def nonce(self):
         return self.milliseconds()
 
-    async def request(self, path, api='public', method='GET', params={}, headers=None, body=None):
-        response = await self.fetch2(path, api, method, params, headers, body)
-        if not isinstance(response, basestring):
-            if 'error' in response:
-                numErrors = len(response['error'])
-                if numErrors:
-                    for i in range(0, len(response['error'])):
-                        if response['error'][i] == 'EService:Unavailable':
-                            raise ExchangeNotAvailable(self.id + ' ' + self.json(response))
-                        if response['error'][i] == 'EDatabase:Internal error':
-                            raise ExchangeNotAvailable(self.id + ' ' + self.json(response))
-                        if response['error'][i] == 'EService:Busy':
-                            raise DDoSProtection(self.id + ' ' + self.json(response))
-                    raise ExchangeError(self.id + ' ' + self.json(response))
-        return response
+    def handle_errors(self, code, reason, url, method, headers, body):
+        if body.find('Invalid order') >= 0:
+            raise InvalidOrder(self.id + ' ' + body)
+        if body.find('Invalid nonce') >= 0:
+            raise InvalidNonce(self.id + ' ' + body)
+        if body.find('Insufficient funds') >= 0:
+            raise InsufficientFunds(self.id + ' ' + body)
+        if body.find('Cancel pending') >= 0:
+            raise CancelPending(self.id + ' ' + body)
+        if body.find('Invalid arguments:volume') >= 0:
+            raise InvalidOrder(self.id + ' ' + body)
+        if body[0] == '{':
+            response = json.loads(body)
+            if not isinstance(response, basestring):
+                if 'error' in response:
+                    numErrors = len(response['error'])
+                    if numErrors:
+                        message = self.id + ' ' + self.json(response)
+                        for i in range(0, len(response['error'])):
+                            if response['error'][i] in self.exceptions:
+                                raise self.exceptions[response['error'][i]](message)
+                        raise ExchangeError(message)
